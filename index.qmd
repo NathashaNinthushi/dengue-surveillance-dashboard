@@ -1,0 +1,623 @@
+---
+title: "Dengue Epidemiology Dashboard: Sri Lanka"
+format:
+  dashboard:
+    theme: cosmo
+    orientation: rows
+    scrolling: true
+    nav-buttons:
+      - icon: github
+        href: https://github.com/thiyangt/denguedatahub
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+
+# ---------------------------------------------------------------------------
+
+# install.packages(c("denguedatahub","tidyverse","lubridate","tsibble",
+#                     "feasts","fabletools","fable","timetk","anomalize",
+#                     "plotly","dygraphs","xts","leaflet","sf","DT","viridis",
+#                     "crosstalk"))
+# devtools::install_github("thiyangt/ceylon") 
+# ---------------------------------------------------------------------------
+
+library(denguedatahub)
+library(tidyverse)
+library(lubridate)
+library(tsibble)
+library(feasts)
+library(fabletools)
+library(timetk)
+library(plotly)
+library(dygraphs)
+library(xts)
+library(leaflet)
+library(sf)
+library(DT)
+library(viridis)
+
+# Accent colour used throughout
+accent <- "#c0392b"
+
+# --- Base data ------------------------------------------------------------
+data(srilanka_weekly_data)
+
+sl <- srilanka_weekly_data |>
+  mutate(start.date = mdy(start.date)) |>
+  arrange(start.date)
+
+# --- National weekly series ----------------------------------------------
+national <- sl |>
+  group_by(year, week, start.date) |>
+  summarise(cases = sum(cases, na.rm = TRUE), .groups = "drop") |>
+  arrange(start.date)
+
+# Regular weekly tsibble for STL / decomposition
+national_tsbl <- sl |>
+  mutate(year_week = yearweek(start.date)) |>
+  group_by(year_week) |>
+  summarise(cases = sum(cases, na.rm = TRUE), .groups = "drop") |>
+  as_tsibble(index = year_week) |>
+  fill_gaps(cases = 0L)
+
+# --- Annual totals --------------------------------------------------------
+annual <- sl |>
+  group_by(year) |>
+  summarise(cases = sum(cases, na.rm = TRUE), .groups = "drop") |>
+  arrange(year)
+
+# --- District totals ------------------------------------------------------
+district_tot <- sl |>
+  group_by(district) |>
+  summarise(total_cases  = sum(cases, na.rm = TRUE),
+            peak_weekly   = max(cases, na.rm = TRUE),
+            .groups = "drop") |>
+  arrange(desc(total_cases)) |>
+  mutate(key = toupper(gsub("[^A-Za-z]", "", district)))
+
+# --- Headline numbers for value boxes ------------------------------------
+total_cases     <- sum(sl$cases, na.rm = TRUE)
+worst_year      <- annual$year[which.max(annual$cases)]
+worst_year_n    <- max(annual$cases)
+worst_district  <- district_tot$district[1]
+latest_row      <- national |> slice_max(start.date, n = 1)
+latest_week_lab <- format(latest_row$start.date, "%d %b %Y")
+latest_week_n   <- latest_row$cases
+```
+
+```{=html}
+<style>
+/* Force readable text + icons on the coloured KPI cards */
+.bslib-value-box .value-box-title,
+.bslib-value-box .value-box-value { color: #ffffff !important; }
+.bslib-value-box .value-box-area  { color: #ffffff !important; }
+.bslib-value-box .value-box-showcase,
+.bslib-value-box .value-box-showcase .bi { color: #ffffff !important; opacity: .95; }
+.bslib-value-box .value-box-value { font-weight: 700; }
+
+/* Darker top navigation bar */
+.navbar,
+.quarto-dashboard .navbar {
+  background-color: #14293a !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+.navbar .navbar-brand,
+.navbar .navbar-title,
+.quarto-dashboard .navbar .navbar-title {
+  color: #ffffff !important;
+  font-weight: 600;
+}
+.navbar .nav-link,
+.navbar .navbar-nav .nav-link,
+.quarto-dashboard .navbar .nav-link {
+  color: rgba(255, 255, 255, 0.78) !important;
+}
+.navbar .nav-link:hover {
+  color: #ffffff !important;
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 6px;
+}
+.navbar .nav-link.active,
+.navbar .navbar-nav .nav-link.active,
+.quarto-dashboard .navbar .navbar-nav .nav-link.active,
+.navbar .nav-item.active .nav-link {
+  color: #ffffff !important;
+  background-color: rgba(255, 255, 255, 0.14) !important;
+  border-radius: 6px;
+  box-shadow: inset 0 -3px 0 #c0392b;
+}
+/* nav-buttons / tool icons (e.g. GitHub) */
+.navbar .quarto-navbar-tools a,
+.navbar .navbar-nav .nav-link .bi,
+.quarto-dashboard .navbar .quarto-dashboard-links a {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+/* Tidy crosstalk checkbox lists (district filters): box inline with label */
+.crosstalk-input .checkbox { margin: 2px 0; }
+.crosstalk-input .checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 0;
+  font-weight: 400;
+  font-size: 0.85rem;
+  line-height: 1.2;
+}
+.crosstalk-input .checkbox input[type="checkbox"] {
+  position: static;
+  margin: 0;
+  flex: 0 0 auto;
+}
+</style>
+```
+
+# Overview
+
+## Row {height="175px"}
+
+```{r}
+#| content: valuebox
+list(title = "Total reported cases · 2006 to present",
+     value = format(total_cases, big.mark = ","),
+     icon  = "virus2",
+     color = "#2f6690")
+```
+
+```{r}
+#| content: valuebox
+list(title = paste0("Cases in the worst year · ", worst_year),
+     value = format(worst_year_n, big.mark = ","),
+     icon  = "graph-up-arrow",
+     color = "#a4243b")
+```
+
+```{r}
+#| content: valuebox
+list(title = "Highest-burden district",
+     value = worst_district,
+     icon  = "pin-map-fill",
+     color = "#1d7874")
+```
+
+```{r}
+#| content: valuebox
+list(title = paste0("Latest reported week · ", latest_week_lab),
+     value = format(latest_week_n, big.mark = ","),
+     icon  = "calendar3-week",
+     color = "#3d4f7c")
+```
+
+## Row {height="600px"}
+
+### Column {width=65%}
+
+```{r}
+#| title: "National weekly dengue cases (drag the range selector to zoom)"
+nat_xts <- xts(national$cases, order.by = national$start.date)
+dygraph(nat_xts, width = "100%", height = 450) |>
+  dyOptions(colors = accent, fillGraph = TRUE, strokeWidth = 1.3) |>
+  dyHighlight(highlightCircleSize = 4) |>
+  dyRangeSelector(height = 30) |>
+  dyAxis("y", label = "Reported cases")
+```
+
+### Column {width=35%}
+
+```{r}
+#| title: "Annual Dengue Cases"
+plot_ly(annual, x = ~year, y = ~cases, type = "bar",
+        marker = list(
+          color = ~cases,
+          # Yellow (fewest cases) -> orange -> dark red (most cases)
+          colorscale = list(c(0,    "#ffffb2"),
+                            c(0.25, "#fecc5c"),
+                            c(0.5,  "#fd8d3c"),
+                            c(0.75, "#f03b20"),
+                            c(1,    "#bd0026")),
+          reversescale = FALSE,
+          line = list(color = "white", width = 0.5)),
+        hovertemplate = "Year %{x}<br>%{y:,} cases<extra></extra>") |>
+  layout(xaxis = list(title = ""), yaxis = list(title = "Cases"),
+         margin = list(t = 10))
+```
+
+# Districts
+
+## Row {height="560px"}
+
+### Column {width=55%}
+
+```{r}
+#| title: "Cumulative reported cases by district"
+# District boundaries from the ceylon package (SLD99 grid -> WGS84 for leaflet)
+library(ceylon)
+data(district)
+
+sl_dist <- district |>
+  filter(!is.na(DISTRICT), DISTRICT != "[UNKNOWN]") |>
+  mutate(key = toupper(gsub("[^A-Za-z]", "", DISTRICT))) |>
+  st_transform(4326) |>
+  left_join(district_tot, by = "key")
+
+pal <- colorNumeric("YlOrRd", domain = sl_dist$total_cases)
+
+leaflet(sl_dist) |>
+  addProviderTiles("CartoDB.Positron") |>
+  addPolygons(
+    fillColor = ~pal(total_cases), weight = 1, color = "white",
+    fillOpacity = 0.85,
+    highlightOptions = highlightOptions(weight = 2.5, color = "#333",
+                                        fillOpacity = 0.95, bringToFront = TRUE),
+    label = ~sprintf("%s: %s cases", DISTRICT,
+                     format(total_cases, big.mark = ","))
+  ) |>
+  addLegend(pal = pal, values = ~total_cases, position = "bottomright",
+            title = "Total cases<br>2006–present", opacity = 0.9)
+```
+
+### Column {width=45%}
+
+```{r}
+#| title: "District ranking"
+district_tot |>
+  transmute(District = district,
+            `Total cases` = total_cases,
+            `Peak weekly` = peak_weekly) |>
+  datatable(options = list(pageLength = 10, dom = "tip"),
+            rownames = FALSE) |>
+  formatCurrency(c("Total cases", "Peak weekly"), currency = "", digits = 0)
+```
+
+## Row {height="620px"}
+
+### Column {width=75%}
+
+```{r}
+#| title: "Weekly cases by district (tick districts on the right to overlay them)"
+library(crosstalk)
+
+# Shared data links the plot and the checkbox list, even in separate columns
+sd_dist <- SharedData$new(sl)
+
+plot_ly(sd_dist, x = ~start.date, y = ~cases, color = ~district,
+        colors = viridis(length(unique(sl$district)), option = "turbo"),
+        type = "scatter", mode = "lines",
+        hovertemplate = "%{x|%d %b %Y}<br>%{y} cases<extra>%{fullData.name}</extra>") |>
+  layout(xaxis = list(title = ""), yaxis = list(title = "Cases"),
+         margin = list(t = 10, b = 30), showlegend = FALSE)
+```
+
+### Column {width=25%}
+
+```{r}
+#| title: "Districts"
+htmltools::tags$div(
+  htmltools::tags$p(
+    htmltools::HTML("Tick one or more districts to overlay their series; "),
+    htmltools::HTML("leave <b>all unticked</b> for every district."),
+    style = "color:#6c757d; font-size:0.8rem; margin:0 0 8px 0; line-height:1.4;"
+  ),
+  htmltools::tags$div(
+    filter_checkbox("district_pick", "", sd_dist, ~district),
+    style = "max-height:520px; overflow-y:auto; padding-right:4px;"
+  )
+)
+```
+
+# By Year
+
+## Row {height="700px"}
+
+```{r}
+#| title: "Total cases by district and year"
+dist_order <- sl |>
+  group_by(district) |>
+  summarise(t = sum(cases, na.rm = TRUE), .groups = "drop") |>
+  arrange(t)
+
+dist_year_hm <- sl |>
+  group_by(district, year) |>
+  summarise(cases = sum(cases, na.rm = TRUE), .groups = "drop") |>
+  mutate(district = factor(district, levels = dist_order$district),
+         cases = as.integer(round(cases)),
+         tip = paste0(district, " \u00b7 ", year, "<br>",
+                      formatC(cases, format = "d", big.mark = ","), " cases"))
+
+p_dy <- ggplot(dist_year_hm,
+               aes(factor(year), district, fill = cases, text = tip)) +
+  geom_tile(colour = "white", linewidth = 0.2) +
+  scale_fill_viridis_c(option = "C", trans = "sqrt", name = "Cases") +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplotly(p_dy, tooltip = "text")
+```
+
+## Row {height="720px"}
+
+```{r}
+#| title: "District case maps, year by year"
+#| fig-width: 14
+#| fig-height: 7
+library(ceylon)
+data(district)
+
+dist_year_map <- sl |>
+  mutate(key = toupper(gsub("[^A-Za-z]", "", district))) |>
+  group_by(year, key) |>
+  summarise(cases = sum(cases, na.rm = TRUE), .groups = "drop")
+
+sl_poly <- district |>
+  filter(!is.na(DISTRICT), DISTRICT != "[UNKNOWN]") |>
+  mutate(key = toupper(gsub("[^A-Za-z]", "", DISTRICT))) |>
+  st_transform(4326) |>
+  st_simplify(dTolerance = 0.005, preserveTopology = TRUE) |>
+  dplyr::select(key)
+
+map_year <- sl_poly |>
+  dplyr::left_join(dist_year_map, by = "key") |>
+  dplyr::filter(!is.na(year))                 # drop the stray "NA" panel
+
+ggplot(map_year) +
+  geom_sf(aes(fill = cases), colour = "white", linewidth = 0.08) +
+  facet_wrap(~ year, ncol = 7) +
+  scale_fill_viridis_c(option = "C", trans = "sqrt", name = "Cases",
+                       labels = scales::label_comma(),
+                       guide = guide_colorbar(title.position = "top",
+                                              title.hjust = 0.5)) +
+  labs(x = NULL, y = NULL) +
+  theme_void(base_size = 10) +
+  theme(
+    strip.text        = element_text(face = "bold", size = 10,
+                                     margin = margin(b = 3)),
+    panel.spacing     = unit(3, "pt"),
+    legend.position   = "bottom",
+    legend.key.width  = unit(40, "pt"),
+    legend.key.height = unit(9, "pt"),
+    legend.title      = element_text(size = 10),
+    legend.text       = element_text(size = 8),
+    plot.margin       = margin(6, 10, 6, 10)
+  )
+```
+
+## Row {height="520px"}
+
+### Column {width=75%}
+
+```{r}
+#| title: "Annual total cases by district (tick districts on the right to overlay them)"
+library(crosstalk)
+
+annual_dist <- sl |>
+  group_by(district, year) |>
+  summarise(cases = sum(cases, na.rm = TRUE), .groups = "drop")
+
+# Shared data links the plot and the checkbox list, even in separate columns
+sd_annual <- SharedData$new(annual_dist)
+
+plot_ly(sd_annual, x = ~year, y = ~cases, color = ~district,
+        colors = viridis(length(unique(annual_dist$district)), option = "turbo"),
+        type = "scatter", mode = "lines",
+        hovertemplate = "%{x}<br>%{y:,} cases<extra>%{fullData.name}</extra>") |>
+  layout(xaxis = list(title = ""), yaxis = list(title = "Total cases"),
+         margin = list(t = 10), showlegend = FALSE)
+```
+
+### Column {width=25%}
+
+```{r}
+#| title: "Districts"
+htmltools::tags$div(
+  htmltools::tags$p(
+    htmltools::HTML("Tick one or more districts to overlay their annual totals; "),
+    htmltools::HTML("leave <b>all unticked</b> for every district."),
+    style = "color:#6c757d; font-size:0.8rem; margin:0 0 8px 0; line-height:1.4;"
+  ),
+  htmltools::tags$div(
+    filter_checkbox("district_pick_yr", "", sd_annual, ~district),
+    style = "max-height:380px; overflow-y:auto; padding-right:4px;"
+  )
+)
+```
+
+# Seasonality & Trend
+
+## Row {height="200px"}
+
+### Column {width=50%}
+
+```{r}
+#| title: "STL — observed cases"
+stl_df <- national_tsbl |>
+  model(STL(cases ~ season(period = 52))) |>
+  components() |>
+  as_tibble() |>
+  mutate(date = as.Date(year_week))
+
+plot_ly(stl_df, x = ~date, y = ~cases, type = "scatter", mode = "lines",
+        line = list(color = "#1b3a4b")) |>
+  layout(xaxis = list(title = ""), yaxis = list(title = "Cases"),
+         margin = list(t = 10))
+```
+
+### Column {width=50%}
+
+```{r}
+#| title: "STL — trend"
+plot_ly(stl_df, x = ~date, y = ~trend, type = "scatter", mode = "lines",
+        line = list(color = "#2f6690")) |>
+  layout(xaxis = list(title = ""), yaxis = list(title = "Trend"),
+         margin = list(t = 10))
+```
+
+## Row {height="200px"}
+
+### Column {width=50%}
+
+```{r}
+#| title: "STL — seasonal (annual, period = 52)"
+plot_ly(stl_df, x = ~date, y = ~season_52, type = "scatter", mode = "lines",
+        line = list(color = "#1d7874")) |>
+  layout(xaxis = list(title = ""), yaxis = list(title = "Seasonal"),
+         margin = list(t = 10))
+```
+
+### Column {width=50%}
+
+```{r}
+#| title: "STL — remainder"
+plot_ly(stl_df, x = ~date, y = ~remainder, type = "scatter", mode = "lines",
+        line = list(color = "#8a8d91")) |>
+  layout(xaxis = list(title = ""), yaxis = list(title = "Remainder"),
+         margin = list(t = 10))
+```
+
+
+## Row {height="700px"}
+
+```{r}
+#| title: "Weekly dengue Cases Heatmap"
+hm <- sl |>
+  group_by(Year = year(start.date), Week = isoweek(start.date)) |>
+  summarise(cases = sum(cases, na.rm = TRUE), .groups = "drop")
+
+p_hm <- ggplot(hm, aes(Week, factor(Year), fill = cases)) +
+  geom_tile(colour = "white", linewidth = 0.2) +
+  scale_fill_viridis_c(option = "C", name = "Cases") +
+  labs(x = "ISO week", y = NULL) +
+  theme_minimal(base_size = 12)
+ggplotly(p_hm)
+```
+
+# Outbreaks
+
+## Row {height="690px"}
+
+### Column {width=64%}
+
+```{r}
+#| title: "Anomaly detection"
+library(anomalize)
+national |>
+  time_decompose(cases, method = "stl", frequency = 52, trend = 104) |>
+  anomalize(remainder, method = "iqr", alpha = 0.05) |>
+  time_recompose() |>
+  plot_anomalies(time_recomposed = TRUE, ncol = 1, alpha_dots = 0.4) +
+  labs(x = NULL, y = "Cases") +
+  theme_minimal(base_size = 11)
+```
+
+### Column {width=36%}
+
+```{r}
+#| title: "Detected outbreak weeks"
+anom <- national |>
+  time_decompose(cases, method = "stl", frequency = 52) |>
+  anomalize(remainder, method = "iqr", alpha = 0.05) |>
+  time_recompose()
+
+anom |>
+  filter(anomaly == "Yes") |>
+  as_tibble() |>
+  transmute(Week  = format(start.date, "%Y-%m-%d"),
+            Cases = observed) |>
+  arrange(desc(Cases)) |>
+  datatable(options = list(pageLength = 12, dom = "tip"), rownames = FALSE)
+```
+
+# Data
+
+## Row {height="170px"}
+
+```{r}
+#| content: valuebox
+list(title = "Weekly observations",
+     value = format(nrow(srilanka_weekly_data), big.mark = ","),
+     icon  = "table",
+     color = "#2f6690")
+```
+
+```{r}
+#| content: valuebox
+list(title = "Districts reported",
+     value = dplyr::n_distinct(sl$district),
+     icon  = "diagram-3-fill",
+     color = "#1d7874")
+```
+
+```{r}
+#| content: valuebox
+list(title = "Reporting period",
+     value = paste0(format(min(sl$start.date), "%Y"), "–",
+                    format(max(sl$start.date), "%Y")),
+     icon  = "calendar-range",
+     color = "#3d4f7c")
+```
+
+```{r}
+#| content: valuebox
+list(title = "Data source",
+     value = "Epi Unit, MoH",
+     icon  = "hospital",
+     color = "#a4243b")
+```
+
+## Row
+
+### Column {width=72%}
+
+```{r}
+#| title: "Browse the raw weekly data — search or filter any column"
+srilanka_weekly_data |>
+  transmute(
+    Year         = factor(year, levels = sort(unique(year))),
+    Week         = factor(week, levels = sort(unique(week))),
+    `Start date` = start.date,
+    `End date`   = end.date,
+    District     = district,
+    Cases        = as.integer(cases)
+  ) |>
+  datatable(filter = "top", rownames = FALSE, width = "100%",
+            options = list(pageLength = 12, dom = "tip", scrollX = TRUE,
+                           autoWidth = TRUE,
+                           order = list(list(0, "desc"), list(1, "desc"))))
+```
+
+### Column {width=28%}
+
+::: {.card title="What the data contains"}
+
+`srilanka_weekly_data` from the **denguedatahub** package — one row per district per
+epidemiological week, sourced from the Epidemiology Unit, Ministry of Health, Sri Lanka
+(Weekly Epidemiological Reports).
+
+| Column | Meaning |
+|---|---|
+| `year` | Epidemiological year |
+| `week` | Epi week number (1–52/53) |
+| `start.date` | First day of the reporting week |
+| `end.date` | Last day of the reporting week |
+| `district` | Administrative reporting area |
+| `cases` | Notified suspected dengue cases |
+
+:::
+
+::: {.card title="Data sources & citations"}
+
+**Dengue case data**
+
+Talagala T (2026). *denguedatahub: A Tidy Format Datasets of Dengue by Country.* R package version 4.1.0. doi:10.32614/CRAN.package.denguedatahub. <https://CRAN.R-project.org/package=denguedatahub>
+
+Original source: Epidemiology Unit, Ministry of Health, Sri Lanka — Weekly Epidemiological Reports. <https://www.epid.gov.lk/>
+
+**District boundaries**
+
+Talagala T (2026). *ceylon: Sri Lanka Maps.* R package version 1.1.0. <https://github.com/thiyangt/ceylon>
+
+
+:::
